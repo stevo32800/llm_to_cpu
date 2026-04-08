@@ -133,6 +133,43 @@ def print_simd_fix(missing: list) -> None:
     print("   → After installing, restart the kernel and re-run this cell.")
 
 
+# ── GGUF file discovery ────────────────────────────────────────────────────
+
+def find_gguf(model_name: str, gguf_dir: str | Path) -> Path:
+    """
+    Auto-detects the quantised GGUF file for a given model.
+
+    Looks for files matching ``<model_folder>-*.gguf`` in gguf_dir,
+    excluding the intermediate F16 file. Returns the first match.
+
+    Parameters
+    ----------
+    model_name : HuggingFace model ID (e.g. "mistralai/Ministral-3B-Instruct-2412")
+    gguf_dir   : directory that contains the .gguf files
+
+    Returns
+    -------
+    Path — path to the detected GGUF file (may not exist if none found)
+    """
+    model_folder = model_name.split("/", 1)[1] if "/" in model_name else model_name
+    gguf_dir = Path(gguf_dir)
+
+    candidates = [
+        f for f in gguf_dir.glob(f"{model_folder}-*.gguf")
+        if not f.stem.endswith("-f16")
+    ]
+
+    if candidates:
+        path = candidates[0]
+        print(f"  GGUF detected: {path.name}")
+        return path
+
+    # Fallback: return the expected balanced path even if it doesn't exist yet
+    fallback = gguf_dir / f"{model_folder}-Q4_K_M.gguf"
+    print(f"  No GGUF found — expected: {fallback.name}")
+    return fallback
+
+
 # ── Thread selection ────────────────────────────────────────────────────────
 
 def get_inference_threads() -> tuple[int, int]:
@@ -213,51 +250,38 @@ def load_model(
 
     print(f"  Threads — inference: {n_threads}  |  batch: {n_threads_batch}")
 
-    # KV cache quantization: halves RAM for contexts above 4096 tokens
-    # Q8_0 (type_k=8) is near-lossless; Q4_0 (type_k=2) is more aggressive
-    kv_kwargs = {}
-    if n_ctx > 4096:
-        kv_kwargs = {"type_k": 8, "type_v": 8}
-        print(f"  KV cache Q8_0 enabled (ctx={n_ctx} > 4096) — ~50% RAM saving")
+    base_kwargs = dict(
+        model_path=str(gguf_path),
+        n_threads=n_threads,
+        n_threads_batch=n_threads_batch,
+        n_ctx=n_ctx,
+        n_batch=n_batch,
+        use_mmap=True,
+        use_mlock=False,
+        verbose=verbose,
+    )
 
     ram_before = psutil.virtual_memory().used / 1024**3
     t0 = time.time()
 
-    try:
-        model = Llama(
-            model_path=str(gguf_path),
-            n_threads=n_threads,
-            n_threads_batch=n_threads_batch,
-            n_ctx=n_ctx,
-            n_batch=n_batch,
-            use_mmap=True,
-            use_mlock=False,
-            flash_attn=True,
-            verbose=verbose,
-            **kv_kwargs,
-        )
-    except TypeError:
-        # Older llama-cpp-python without flash_attn / KV cache type params
-        print("  ⚠️  flash_attn / KV-cache-quant not supported — upgrade to llama-cpp-python >= 0.3.4")
+    # Fallback chain: try flash_attn + KV Q4_0 first (fastest / least RAM),
+    # then Q8_0 (near-lossless), then no flash_attn, then minimal params.
+    # type_k=2 = Q4_0 (fast), type_k=8 = Q8_0 (accurate)
+    model = None
+    for kv_type, label in [(2, "Q4_0"), (8, "Q8_0"), (None, None)]:
         try:
-            model = Llama(
-                model_path=str(gguf_path),
-                n_threads=n_threads,
-                n_threads_batch=n_threads_batch,
-                n_ctx=n_ctx,
-                n_batch=n_batch,
-                use_mmap=True,
-                use_mlock=False,
-                verbose=verbose,
-            )
-        except Exception as e:
-            print(f"  Falling back to minimal parameters ({e})")
-            model = Llama(
-                model_path=str(gguf_path),
-                n_threads=n_threads,
-                n_ctx=n_ctx,
-                verbose=verbose,
-            )
+            if kv_type is not None:
+                model = Llama(**base_kwargs, flash_attn=True, type_k=kv_type, type_v=kv_type)
+                print(f"  Flash Attention + KV cache {label} enabled")
+            else:
+                model = Llama(**base_kwargs)
+                print("  ⚠️  flash_attn not supported — upgrade llama-cpp-python >= 0.3.4")
+            break
+        except (TypeError, ValueError):
+            continue
+
+    if model is None:
+        model = Llama(model_path=str(gguf_path), n_threads=n_threads, n_ctx=n_ctx, verbose=verbose)
 
     load_time = time.time() - t0
     ram_used  = psutil.virtual_memory().used / 1024**3 - ram_before
@@ -445,15 +469,29 @@ def generate(
     elapsed = time.time() - t0
     stop_flag.set()
 
-    tok_s   = completion_tokens / elapsed if elapsed > 0 else 0
-    avg_cpu = sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0
+    # Estimate prefill vs generation split.
+    # Prefill (prompt processing) is ~3× faster per token than generation.
+    # Approximation: prefill_time ≈ total × (prompt_tokens / total_tokens) × 0.3
+    if not stream:
+        prompt_tokens = resp["usage"]["prompt_tokens"]
+        total_tokens  = resp["usage"]["total_tokens"]
+        prefill_frac  = (prompt_tokens / total_tokens * 0.3) if total_tokens > 0 else 0
+    else:
+        prefill_frac = 0.0  # not available without usage stats in stream mode
+
+    prefill_time    = round(elapsed * prefill_frac, 2)
+    generation_time = round(elapsed - prefill_time, 2)
+    tok_s           = completion_tokens / generation_time if generation_time > 0 else 0
+    avg_cpu         = sum(cpu_samples) / len(cpu_samples) if cpu_samples else 0
 
     return {
-        "text":        text,
-        "tokens":      completion_tokens,
-        "time_s":      round(elapsed, 2),
-        "tok_s":       round(tok_s, 1),
-        "avg_cpu_pct": round(avg_cpu, 1),
+        "text":            text,
+        "tokens":          completion_tokens,
+        "time_s":          round(elapsed, 2),
+        "prefill_time_s":  prefill_time,
+        "generation_time_s": generation_time,
+        "tok_s":           round(tok_s, 1),
+        "avg_cpu_pct":     round(avg_cpu, 1),
     }
 
 
