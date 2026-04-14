@@ -20,6 +20,6 @@ config.json
 /models/full/
 /models/gguf/
 /hf_downloads/
-/llama.cpp/
+/models/llama.cpp/
 *.json
 *.safetensors
