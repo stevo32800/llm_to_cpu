@@ -8,7 +8,7 @@ import cpuinfo
 import psutil
 import json
 import shutil
-
+import sys 
 
 class cpu_optimizer:
     """
@@ -48,7 +48,7 @@ class cpu_optimizer:
         self.quantization_verbose = quantization_verbose
 
         # Paths
-        self.llama_dir = Path("/models/llama.cpp")  # Shared directory via Docker volume
+        self.llama_dir = Path("/models/llama.cpp")
         model_folder = model_name.split("/", 1)[1] if "/" in model_name else model_name
         self.hf_model = Path(input_path) / model_name
         self.gguf_dir = Path(output_path)
@@ -325,7 +325,7 @@ class cpu_optimizer:
         print(f"  Logical cores  : {cores_logical}")
 
         # Base flags present on all builds: native optimisation + OpenMP
-        base_flags = "-DGGML_NATIVE=ON -DGGML_OPENMP=ON"
+        base_flags =  "-DGGML_NATIVE=ON -DGGML_OPENMP=ON -DGGML_F16C=ON"
 
         # Explicit SIMD flags based on detected capabilities
         if has_amx:

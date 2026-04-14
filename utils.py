@@ -134,7 +134,7 @@ def load_model(
     # Use all physical cores — leave 0 for OS (llama.cpp manages internal scheduling).
     # os.cpu_count() is the WSL-safe fallback: psutil may under-report under WSL.
     if n_threads is None:
-        n_threads = psutil.cpu_count(logical=False) or os.cpu_count() or 1
+        n_threads = psutil.cpu_count(logical=True) or os.cpu_count() or 1
 
     if n_ctx is None:
         ram_avail = psutil.virtual_memory().available / 1024**3
@@ -158,7 +158,13 @@ def load_model(
 
     # Fallback chain: Q4_0 KV (fastest) → Q8_0 KV (accurate) → no flash_attn
     model = None
-    for kv_type, label in [(2, "Q4_0"), (8, "Q8_0"), (None, None)]:
+    fallbacks = [
+                (2, "Q4_0"),   # meilleur si supporté
+                (4, "Q4_K"),   # plus compatible
+                (8, "Q8_0"),   # lent mais stable
+                (None, None),  # sans flash_attn
+            ]
+    for kv_type, label in fallbacks:
         try:
             if kv_type is not None:
                 model = Llama(**base_kwargs, flash_attn=True, type_k=kv_type, type_v=kv_type)
@@ -222,7 +228,7 @@ def generate(
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
-        repeat_penalty=repeat_penalty,
+        repeat_penalty=repeat_penalty,   
     )
 
     if stream:

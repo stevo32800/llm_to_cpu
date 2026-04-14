@@ -19,10 +19,9 @@ notebook>=7.0.0
 #
 # Or use the pre-built AVX2 wheel (no compiler needed):
 #
-#   pip install llama-cpp-python \
-#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/avx2
-#
-llama-cpp-python>=0.3.4
+
+#llama-cpp-python --extra-index-url "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+llama-cpp-python==0.3.20
 
 # ── System monitoring ──────────────────────────────────────────────────────
 psutil>=5.9.0
@@ -36,3 +35,4 @@ torch>=2.1.0
 sentencepiece>=0.2.0
 transformers>=4.40.0
 tokenizers>=0.21.0
+python-dotenv==1.2.2
