@@ -24,3 +24,6 @@ config.json
 *.json
 *.safetensors
 .env
+/optimizer/
+medium_article_llm_on_cpu.md
+models/
