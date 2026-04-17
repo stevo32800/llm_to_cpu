@@ -134,7 +134,7 @@ def load_model(
     # Use all physical cores — leave 0 for OS (llama.cpp manages internal scheduling).
     # os.cpu_count() is the WSL-safe fallback: psutil may under-report under WSL.
     if n_threads is None:
-        n_threads = psutil.cpu_count(logical=True) or os.cpu_count() or 1
+        n_threads = psutil.cpu_count(logical=False) or os.cpu_count() or 1
 
     if n_ctx is None:
         ram_avail = psutil.virtual_memory().available / 1024**3
@@ -149,7 +149,7 @@ def load_model(
         n_ctx=n_ctx,
         n_batch=n_batch,
         use_mmap=True,
-        use_mlock=False,
+        use_mlock=True,
         verbose=verbose,
     )
 
